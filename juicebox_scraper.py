@@ -367,13 +367,13 @@ async def perform_search(page, query: str):
     print("       -> Typing search query...")
     textarea = page.locator("textarea#filter-input").first
     try:
-        await textarea.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+        await textarea.wait_for(state="visible", timeout=15000)
     except PlaywrightTimeout:
         # Fallback: any visible textarea, but dismiss popups first
         print("       [WARN] Textarea not found immediately, trying to dismiss popups...")
         await dismiss_popups(page)
-        textarea = page.locator("textarea").first
-        await textarea.wait_for(state="visible", timeout=ACTION_TIMEOUT)
+        textarea = page.locator("textarea, input[placeholder*='search' i], input[type='text']").first
+        await textarea.wait_for(state="visible", timeout=15000)
 
     await textarea.fill(query)
     await page.wait_for_timeout(1000)
@@ -755,6 +755,11 @@ async def run_scraper(
             except PlaywrightTimeout as e:
                 err_msg = f"Timeout Error: The page took too long to load or an expected element was not found."
                 print(f"\n[FATAL] {err_msg}\nDetails: {e}")
+                try:
+                    await page.screenshot(path="error.png", full_page=True)
+                    print("[INFO] Saved screenshot to error.png for debugging.")
+                except Exception:
+                    pass
                 return [], "", err_msg
             except Exception as e:
                 err_msg = f"An unexpected error occurred during scraping: {e}"
