@@ -29,22 +29,13 @@ JUICEBOX_URL = (
     "search?search_id=G8aUmNlRxdihlx8xzABH"
 )
 
-# Detect cloud/Render environment (Render sets RENDER=true automatically)
-IS_CLOUD = os.getenv("RENDER") or os.getenv("IS_CLOUD") or not sys.platform.startswith("win")
-TIMEOUT_MULTIPLIER = 3 if IS_CLOUD else 1  # 3x timeouts on cloud
-
-# Timeouts (ms) — scaled up automatically on resource-constrained cloud
-NAV_TIMEOUT = 120_000 * TIMEOUT_MULTIPLIER
-ACTION_TIMEOUT = 60_000 * TIMEOUT_MULTIPLIER
-PANEL_TIMEOUT = 30_000 * TIMEOUT_MULTIPLIER
-SHORT_WAIT = 8000 if IS_CLOUD else 4000  # static waits between actions
-LONG_WAIT = 15000 if IS_CLOUD else 8000
+# Timeouts (ms)
+NAV_TIMEOUT = 90_000
+ACTION_TIMEOUT = 30_000
+PANEL_TIMEOUT = 15_000
 
 # Default fetch limit
 DEFAULT_FETCH_LIMIT = 500
-
-if IS_CLOUD:
-    print("[CONFIG] Cloud environment detected — using extended timeouts & low-memory mode")
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -210,14 +201,12 @@ async def safe_click(page, selector, timeout=15000, description="element"):
 async def login(page):
     """Navigate to Juicebox and complete the login flow."""
     print("[1/4] Navigating to Juicebox...")
-    # Use networkidle on cloud to ensure page fully loads before interacting
-    wait_strategy = "networkidle" if IS_CLOUD else "domcontentloaded"
-    await page.goto(JUICEBOX_URL, wait_until=wait_strategy, timeout=NAV_TIMEOUT)
-    await page.wait_for_timeout(SHORT_WAIT)
+    await page.goto(JUICEBOX_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+    await page.wait_for_timeout(4000)
 
     # Step 1: Click "Continue with Email" -- use JS to find the right button
     print("       -> Clicking 'Continue with Email'...")
-    await page.wait_for_timeout(SHORT_WAIT // 2)
+    await page.wait_for_timeout(2000)
     try:
         # Use JavaScript to find and click the correct button
         await page.evaluate("""
@@ -234,7 +223,7 @@ async def login(page):
     except Exception:
         # Fallback
         await page.locator("button:has-text('Continue with Email')").first.click()
-    await page.wait_for_timeout(SHORT_WAIT)
+    await page.wait_for_timeout(3000)
 
     # Step 2: Click "Login" link
     print("       -> Clicking 'Login' link...")
@@ -253,7 +242,7 @@ async def login(page):
         """)
     except Exception:
         await page.locator("button:has-text('Login')").first.click()
-    await page.wait_for_timeout(SHORT_WAIT)
+    await page.wait_for_timeout(3000)
 
     # Step 3: Fill email -- use JavaScript to target the visible email input
     print("       -> Filling credentials...")
@@ -273,7 +262,7 @@ async def login(page):
             }}
         }}
     """)
-    await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(500)
 
     # Step 4: Fill password
     await page.evaluate("""
@@ -292,7 +281,7 @@ async def login(page):
             }
         }
     """, JUICEBOX_PASSWORD)
-    await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(500)
 
     # Step 5: Click "Continue" button
     print("       -> Clicking 'Continue'...")
@@ -308,17 +297,9 @@ async def login(page):
         }
     """)
 
-    # Wait for dashboard to load — give extra time on cloud
+    # Wait for dashboard to load
     print("       -> Waiting for dashboard...")
-    await page.wait_for_timeout(LONG_WAIT)
-
-    # Also wait for network to settle on cloud
-    if IS_CLOUD:
-        try:
-            await page.wait_for_load_state("networkidle", timeout=30000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(5000)
+    await page.wait_for_timeout(8000)
 
     # Dismiss any popups that appeared after login (e.g. "We revamped agents")
     await dismiss_popups(page)
@@ -330,16 +311,24 @@ async def login(page):
     else:
         # Try waiting for sidebar
         try:
-            await page.wait_for_selector("text=Home", timeout=ACTION_TIMEOUT)
+            await page.wait_for_selector("text=Home", timeout=30000)
             print("       [OK] Login successful!")
         except PlaywrightTimeout:
             print("       [WARN] Could not verify login, continuing anyway...")
 
 
-async def _click_new_search_js(page) -> bool:
-    """Try to click 'New search' via JavaScript. Returns True if clicked."""
+async def perform_search(page, query: str):
+    """Click 'New Search', type the query, and run the search."""
+    print(f"[2/4] Performing search: '{query}'")
+
+    # Dismiss any popups before interacting with the search UI
+    await dismiss_popups(page)
+
+    # Click "+ New search" in sidebar
+    print("       -> Clicking 'New search'...")
+    clicked = False
     try:
-        return await page.evaluate("""
+        clicked = await page.evaluate("""
             () => {
                 // Try sidebar "New search" link
                 const elements = document.querySelectorAll('*');
@@ -361,82 +350,38 @@ async def _click_new_search_js(page) -> bool:
             }
         """)
     except Exception:
-        return False
-
-
-async def perform_search(page, query: str):
-    """Click 'New Search', type the query, and run the search."""
-    print(f"[2/4] Performing search: '{query}'")
-
-    # Dismiss any popups before interacting with the search UI
-    await dismiss_popups(page)
-
-    # Click "+ New search" in sidebar — with retry logic for slow cloud envs
-    print("       -> Clicking 'New search'...")
-    max_retries = 5 if IS_CLOUD else 2
-    clicked = False
-    for attempt in range(max_retries):
-        clicked = await _click_new_search_js(page)
-        if clicked:
-            print(f"       [OK] 'New search' clicked (attempt {attempt + 1})")
-            break
-        print(f"       [RETRY {attempt + 1}/{max_retries}] 'New search' not found, waiting...")
-        await dismiss_popups(page)
-        await page.wait_for_timeout(5000)
-        # On cloud, try waiting for network to settle
-        if IS_CLOUD:
-            try:
-                await page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
-
+        pass
+        
     if not clicked:
-        # Last resort: try locator with a generous timeout
         try:
-            await page.locator("text=New search").first.click(timeout=ACTION_TIMEOUT)
-            clicked = True
+            await page.locator("text=New search").first.click(timeout=8000)
         except Exception as e:
-            print(f"       [WARN] All attempts to click 'New search' failed: {e}")
-
-    await page.wait_for_timeout(SHORT_WAIT)
+            print(f"       [WARN] Fallback click for 'New search' failed: {e}")
+            
+    await page.wait_for_timeout(4000)
 
     # Dismiss popups again just in case clicking New Search triggered one
     await dismiss_popups(page)
 
-    # Type the search query into the textarea — with retry for cloud
+    # Type the search query into the textarea
     print("       -> Typing search query...")
-    textarea = None
-    textarea_selectors = [
-        "textarea#filter-input",
-        "textarea",
-        "input[placeholder*='search' i]",
-        "input[type='text']",
-    ]
-    for attempt in range(max_retries):
-        for sel in textarea_selectors:
-            try:
-                candidate = page.locator(sel).first
-                await candidate.wait_for(state="visible", timeout=10000)
-                textarea = candidate
-                break
-            except Exception:
-                continue
-        if textarea:
-            break
-        print(f"       [RETRY {attempt + 1}/{max_retries}] Textarea not visible, dismissing popups...")
+    textarea = page.locator("textarea#filter-input").first
+    try:
+        await textarea.wait_for(state="visible", timeout=15000)
+    except PlaywrightTimeout:
+        # Fallback: any visible textarea, but dismiss popups first
+        print("       [WARN] Textarea not found immediately, trying to dismiss popups...")
         await dismiss_popups(page)
-        await page.wait_for_timeout(5000)
-
-    if not textarea:
-        raise PlaywrightTimeout("Could not find search textarea after all retries")
+        textarea = page.locator("textarea, input[placeholder*='search' i], input[type='text']").first
+        await textarea.wait_for(state="visible", timeout=15000)
 
     await textarea.fill(query)
-    await page.wait_for_timeout(2000)
+    await page.wait_for_timeout(1000)
 
     # Press Enter to submit the query
     print("       -> Submitting query (pressing Enter)...")
     await textarea.press("Enter")
-    await page.wait_for_timeout(LONG_WAIT)
+    await page.wait_for_timeout(8000)
 
     # Click "Run Search" button
     print("       -> Clicking 'Run Search'...")
@@ -459,7 +404,7 @@ async def perform_search(page, query: str):
 
     # Wait for results to load
     print("       -> Waiting for results to load...")
-    await page.wait_for_timeout(LONG_WAIT)
+    await page.wait_for_timeout(10000)
 
     # Check if results appeared
     try:
@@ -469,7 +414,7 @@ async def perform_search(page, query: str):
         print("       [OK] Search results loaded!")
     except PlaywrightTimeout:
         try:
-            await page.wait_for_selector("text=Matches", timeout=ACTION_TIMEOUT)
+            await page.wait_for_selector("text=Matches", timeout=30000)
             print("       [OK] Search results loaded (matches found)!")
         except PlaywrightTimeout:
             print("       [WARN] Could not confirm results, continuing...")
@@ -778,37 +723,13 @@ async def run_scraper(
         print(f"Fetch limit: {fetch_limit} records\n")
 
         async with async_playwright() as p:
-            # Chromium launch args — aggressive memory savings for cloud
-            chrome_args = ["--no-sandbox", "--disable-setuid-sandbox"]
-            if IS_CLOUD:
-                chrome_args.extend([
-                    "--disable-dev-shm-usage",       # Use /tmp instead of /dev/shm (critical for Docker)
-                    "--disable-gpu",                  # No GPU on cloud
-                    "--disable-extensions",           # No extensions needed
-                    "--disable-background-networking",
-                    "--disable-default-apps",
-                    "--disable-sync",
-                    "--disable-translate",
-                    "--disable-features=TranslateUI",
-                    "--no-first-run",
-                    "--no-zygote",                    # Reduces memory by ~30MB
-                    "--single-process",               # Run everything in one process (saves ~100MB)
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    "--disable-ipc-flooding-protection",
-                    "--js-flags=--max-old-space-size=256",  # Limit JS heap
-                ])
-
             browser = await p.chromium.launch(
                 headless=headless,
-                slow_mo=50 if IS_CLOUD else 100,
-                args=chrome_args,
+                slow_mo=100,
+                args=["--no-sandbox", "--disable-setuid-sandbox"],
             )
-            # Smaller viewport on cloud to reduce rendering memory
-            vp_width = 1280 if IS_CLOUD else 1366
-            vp_height = 720 if IS_CLOUD else 900
             context = await browser.new_context(
-                viewport={"width": vp_width, "height": vp_height},
+                viewport={"width": 1366, "height": 900},
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
