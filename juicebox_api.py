@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from juicebox_scraper import run_scraper
 import asyncio
+import os
 import sys
 
 def _run_scraper_sync(query: str, fetch_limit: int, headless: bool):
