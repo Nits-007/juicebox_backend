@@ -688,6 +688,7 @@ async def run_scraper(
     query: str,
     fetch_limit: int = DEFAULT_FETCH_LIMIT,
     headless: bool = True,
+    save_to_disk: bool = True,
     log_fn=None,
 ) -> tuple[list[dict], str, str]:
     """Run the scraper programmatically (used by Streamlit frontend).
@@ -696,6 +697,7 @@ async def run_scraper(
         query: Search query string.
         fetch_limit: Maximum number of records to fetch.
         headless: Run browser in headless mode.
+        save_to_disk: Whether to save the CSV file to disk.
         log_fn: Optional callback ``fn(msg)`` for each log line.
 
     Returns:
@@ -746,7 +748,8 @@ async def run_scraper(
 
                 filepath = ""
                 if all_data:
-                    filepath = save_to_csv(all_data, filename)
+                    if save_to_disk:
+                        filepath = save_to_csv(all_data, filename)
                 else:
                     print("\n[WARN] No data was extracted.")
 
