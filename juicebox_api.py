@@ -8,7 +8,7 @@ import sys
 import io
 import csv
 
-def _run_scraper_sync(query: str, fetch_limit: int, headless: bool):
+def _run_scraper_sync(query: str, criteria: str, fetch_limit: int, headless: bool):
     """Run the async scraper in a fresh event loop on Windows to avoid NotImplementedError."""
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -17,13 +17,14 @@ def _run_scraper_sync(query: str, fetch_limit: int, headless: bool):
     asyncio.set_event_loop(loop)
     try:
         return loop.run_until_complete(
-            run_scraper(query=query, fetch_limit=fetch_limit, headless=headless, save_to_disk=False)
+            run_scraper(query=query, criteria=criteria, fetch_limit=fetch_limit, headless=headless, save_to_disk=False)
         )
     finally:
         loop.close()
 
 app = FastAPI()
 
+# Enable CORS globally
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,12 +34,15 @@ app.add_middleware(
 )
 
 
+# Request model
 class ScrapeRequest(BaseModel):
     query: str
+    criteria: str = ""
     fetch_limit: int = 100
     headless: bool = True
 
 
+# Health check
 @app.get("/")
 async def root():
     return {
@@ -46,6 +50,7 @@ async def root():
     }
 
 
+# Main scraper endpoint
 @app.post("/scrape")
 async def scrape(data: ScrapeRequest):
 
@@ -53,6 +58,7 @@ async def scrape(data: ScrapeRequest):
         results, filepath, error = await asyncio.to_thread(
             _run_scraper_sync,
             data.query,
+            data.criteria,
             data.fetch_limit,
             data.headless,
         )
@@ -63,10 +69,11 @@ async def scrape(data: ScrapeRequest):
                 detail=error
             )
 
+        # Generate CSV string in memory for the frontend to download
         csv_content = ""
         if results:
             output = io.StringIO()
-            writer = csv.DictWriter(output, fieldnames=["name", "city", "state", "full_location"])
+            writer = csv.DictWriter(output, fieldnames=["name", "linkedin_url", "location"])
             writer.writeheader()
             writer.writerows(results)
             csv_content = output.getvalue()
