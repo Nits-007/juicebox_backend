@@ -27,7 +27,7 @@ app = FastAPI()
 # Enable CORS globally
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://13.60.89.246"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
