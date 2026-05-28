@@ -1,9 +1,9 @@
 """
 Juicebox AI Scraper
 -------------------
-Automates login, search, and data extraction from Juicebox AI.
-Extracts Name and Location (City, State) from search results
-and saves them to a CSV file.
+Automates login, search, criteria filtering, and data extraction from Juicebox AI.
+Extracts Name, LinkedIn URL, Location, and Match Percentage from
+table view results and saves them to a CSV file.
 
 Usage:
     python juicebox_scraper.py
@@ -39,18 +39,6 @@ DEFAULT_FETCH_LIMIT = 500
 
 
 # -- Helpers -------------------------------------------------------------------
-def parse_location(raw_location: str) -> dict:
-    """Parse a raw location string into city and state components."""
-    if not raw_location:
-        return {"city": "", "state": ""}
-    parts = [p.strip() for p in raw_location.split(",")]
-    if len(parts) >= 3:
-        return {"city": parts[0], "state": parts[1]}
-    elif len(parts) == 2:
-        return {"city": parts[0], "state": parts[1]}
-    return {"city": raw_location, "state": ""}
-
-
 def generate_filename(query: str) -> str:
     """Generate a descriptive CSV filename from the search query."""
     safe = re.sub(r"[^\w\s-]", "", query)[:40].strip().replace(" ", "_")
@@ -59,21 +47,12 @@ def generate_filename(query: str) -> str:
 
 
 async def dismiss_popups(page):
-    """Dismiss any modal/dialog/popup overlay that is blocking the main screen.
-
-    Handles a wide variety of popup patterns:
-      - Dialogs with a close button (aria-label='Close', dialog-close class, X icon)
-      - Overlay backdrops that can be clicked to dismiss
-      - Generic modals with dismiss/cancel/close buttons
-      - Falls back to pressing Escape as a last resort
-    """
+    """Dismiss any modal/dialog/popup overlay that is blocking the main screen."""
     dismissed = False
     try:
         dismissed = await page.evaluate("""
             () => {
                 let closed = false;
-
-                // Strategy 1: Close buttons inside dialog/modal containers
                 const closeSelectors = [
                     'button[aria-label="Close"]',
                     'button[aria-label="close"]',
@@ -99,8 +78,6 @@ async def dismiss_popups(page):
                 }
                 if (closed) return true;
 
-                // Strategy 2: Find any visible dialog/modal and look for its
-                // close-like button (X, ×, Close, Dismiss, Cancel, Got it, etc.)
                 const dialogContainers = document.querySelectorAll(
                     '[role="dialog"], [data-slot="dialog-content"], ' +
                     '.modal, .modal-content, [class*="popup"], [class*="overlay"]'
@@ -128,7 +105,6 @@ async def dismiss_popups(page):
                 }
                 if (closed) return true;
 
-                // Strategy 3: Click the overlay backdrop itself to dismiss
                 const overlaySelectors = [
                     '[data-slot="dialog-overlay"]',
                     '.modal-backdrop',
@@ -148,10 +124,8 @@ async def dismiss_popups(page):
     except Exception:
         pass
 
-    # Strategy 4: Fallback — press Escape to close any remaining modal
     if not dismissed:
         try:
-            # Check if any dialog/overlay is still visible
             has_overlay = await page.evaluate("""
                 () => {
                     const els = document.querySelectorAll(
@@ -180,7 +154,6 @@ async def dismiss_popups(page):
 async def safe_click(page, selector, timeout=15000, description="element"):
     """Safely find and click an element, trying multiple strategies."""
     print(f"       -> Clicking '{description}'...")
-    # Try direct locator first
     el = page.locator(selector).first
     try:
         await el.wait_for(state="visible", timeout=timeout)
@@ -188,7 +161,6 @@ async def safe_click(page, selector, timeout=15000, description="element"):
         return True
     except Exception:
         pass
-    # Try with JavaScript click as fallback
     try:
         await page.eval_on_selector(selector, "el => el.click()")
         return True
@@ -200,15 +172,13 @@ async def safe_click(page, selector, timeout=15000, description="element"):
 # -- Core Scraper --------------------------------------------------------------
 async def login(page):
     """Navigate to Juicebox and complete the login flow."""
-    print("[1/4] Navigating to Juicebox...")
+    print("[1/5] Navigating to Juicebox...")
     await page.goto(JUICEBOX_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
     await page.wait_for_timeout(4000)
 
-    # Step 1: Click "Continue with Email" -- use JS to find the right button
     print("       -> Clicking 'Continue with Email'...")
     await page.wait_for_timeout(2000)
     try:
-        # Use JavaScript to find and click the correct button
         await page.evaluate("""
             () => {
                 const buttons = document.querySelectorAll('button');
@@ -221,11 +191,9 @@ async def login(page):
             }
         """)
     except Exception:
-        # Fallback
         await page.locator("button:has-text('Continue with Email')").first.click()
     await page.wait_for_timeout(3000)
 
-    # Step 2: Click "Login" link
     print("       -> Clicking 'Login' link...")
     try:
         await page.evaluate("""
@@ -244,7 +212,6 @@ async def login(page):
         await page.locator("button:has-text('Login')").first.click()
     await page.wait_for_timeout(3000)
 
-    # Step 3: Fill email -- use JavaScript to target the visible email input
     print("       -> Filling credentials...")
     await page.evaluate(f"""
         () => {{
@@ -264,7 +231,6 @@ async def login(page):
     """)
     await page.wait_for_timeout(500)
 
-    # Step 4: Fill password
     await page.evaluate("""
         (pwd) => {
             const inputs = document.querySelectorAll('input[type="password"]');
@@ -283,7 +249,6 @@ async def login(page):
     """, JUICEBOX_PASSWORD)
     await page.wait_for_timeout(500)
 
-    # Step 5: Click "Continue" button
     print("       -> Clicking 'Continue'...")
     await page.evaluate("""
         () => {
@@ -297,19 +262,14 @@ async def login(page):
         }
     """)
 
-    # Wait for dashboard to load
     print("       -> Waiting for dashboard...")
     await page.wait_for_timeout(8000)
-
-    # Dismiss any popups that appeared after login (e.g. "We revamped agents")
     await dismiss_popups(page)
 
-    # Verify we're logged in
     current_url = page.url
     if "project" in current_url or "search" in current_url:
         print("       [OK] Login successful!")
     else:
-        # Try waiting for sidebar
         try:
             await page.wait_for_selector("text=Home", timeout=30000)
             print("       [OK] Login successful!")
@@ -319,18 +279,15 @@ async def login(page):
 
 async def perform_search(page, query: str):
     """Click 'New Search', type the query, and run the search."""
-    print(f"[2/4] Performing search: '{query}'")
+    print(f"[2/5] Performing search: '{query}'")
 
-    # Dismiss any popups before interacting with the search UI
     await dismiss_popups(page)
 
-    # Click "+ New search" in sidebar
     print("       -> Clicking 'New search'...")
     clicked = False
     try:
         clicked = await page.evaluate("""
             () => {
-                // Try sidebar "New search" link
                 const elements = document.querySelectorAll('*');
                 for (const el of elements) {
                     if (el.textContent.trim() === 'New search' && el.children.length === 0) {
@@ -338,7 +295,6 @@ async def perform_search(page, query: str):
                         return true;
                     }
                 }
-                // Try the top-bar "+ New Search" button
                 const buttons = document.querySelectorAll('button');
                 for (const btn of buttons) {
                     if (btn.textContent.includes('New Search')) {
@@ -351,25 +307,21 @@ async def perform_search(page, query: str):
         """)
     except Exception:
         pass
-        
+
     if not clicked:
         try:
             await page.locator("text=New search").first.click(timeout=8000)
         except Exception as e:
             print(f"       [WARN] Fallback click for 'New search' failed: {e}")
-            
-    await page.wait_for_timeout(4000)
 
-    # Dismiss popups again just in case clicking New Search triggered one
+    await page.wait_for_timeout(4000)
     await dismiss_popups(page)
 
-    # Type the search query into the textarea
     print("       -> Typing search query...")
     textarea = page.locator("textarea#filter-input").first
     try:
         await textarea.wait_for(state="visible", timeout=15000)
     except PlaywrightTimeout:
-        # Fallback: any visible textarea, but dismiss popups first
         print("       [WARN] Textarea not found immediately, trying to dismiss popups...")
         await dismiss_popups(page)
         textarea = page.locator("textarea, input[placeholder*='search' i], input[type='text']").first
@@ -378,12 +330,10 @@ async def perform_search(page, query: str):
     await textarea.fill(query)
     await page.wait_for_timeout(1000)
 
-    # Press Enter to submit the query
     print("       -> Submitting query (pressing Enter)...")
     await textarea.press("Enter")
     await page.wait_for_timeout(8000)
 
-    # Click "Run Search" button
     print("       -> Clicking 'Run Search'...")
     try:
         await page.evaluate("""
@@ -402,11 +352,9 @@ async def perform_search(page, query: str):
         run_btn = page.locator("button:has-text('Run Search')").first
         await run_btn.click()
 
-    # Wait for results to load
     print("       -> Waiting for results to load...")
     await page.wait_for_timeout(10000)
 
-    # Check if results appeared
     try:
         await page.wait_for_selector(
             "[data-testid='search-display']", timeout=NAV_TIMEOUT
@@ -420,254 +368,276 @@ async def perform_search(page, query: str):
             print("       [WARN] Could not confirm results, continuing...")
 
 
-async def extract_profile_data(page, index: int) -> dict | None:
-    """Click a profile card by index, extract Name + Location, close panel."""
-    try:
-        # Get all profile cards fresh each time (DOM may change after panel close)
-        cards = page.locator("div[role='row'][aria-label^='Profile card for']")
-        card_count = await cards.count()
+# -- Criteria & Table View -----------------------------------------------------
+async def add_criteria(page, criteria_text: str):
+    """Click Criteria button, add a custom criterion, type text, and click Update."""
+    print(f"[3/5] Adding criteria: '{criteria_text}'")
 
-        if card_count == 0:
-            # Fallback selector
-            cards = page.locator("div[aria-label='Search results'] > div")
-            card_count = await cards.count()
-
-        if index >= card_count:
-            return None
-
-        card = cards.nth(index)
-
-        # Scroll the card into view
-        try:
-            await card.scroll_into_view_if_needed()
-            await page.wait_for_timeout(500)
-        except Exception:
-            pass
-
-        # Get the name from the card before clicking
-        card_name = ""
-        try:
-            name_el = card.locator("p").first
-            card_name = (await name_el.inner_text()).strip()
-        except Exception:
-            pass
-
-        if not card_name:
-            return None
-
-        # Click the card/name to open profile panel
-        try:
-            name_el = card.locator("p").first
-            await name_el.click()
-        except Exception:
-            await card.click()
-        await page.wait_for_timeout(2500)
-
-        # Extract name from the profile panel
-        name = card_name
-        try:
-            panel_name = page.locator("span.font-medium.truncate").first
-            await panel_name.wait_for(state="visible", timeout=8000)
-            name = (await panel_name.inner_text()).strip()
-        except Exception:
-            pass  # Use card_name as fallback
-
-        # Extract location from the profile panel
-        location_raw = ""
-        try:
-            loc_el = page.locator("span[aria-label^='Location:']").first
-            await loc_el.wait_for(state="visible", timeout=5000)
-            aria = await loc_el.get_attribute("aria-label")
-            if aria:
-                location_raw = aria.replace("Location: ", "").strip()
-        except Exception:
-            # Fallback: try to get location text below the name
-            try:
-                # The location is usually the second line under the name in the panel
-                loc_text = await page.evaluate("""
-                    () => {
-                        const spans = document.querySelectorAll('span[aria-label]');
-                        for (const s of spans) {
-                            const label = s.getAttribute('aria-label');
-                            if (label && label.startsWith('Location:')) {
-                                return label.replace('Location: ', '');
-                            }
-                        }
-                        return '';
-                    }
-                """)
-                location_raw = loc_text.strip()
-            except Exception:
-                pass
-
-        parsed = parse_location(location_raw)
-
-        # Close the profile panel
-        try:
-            # Try the X/Close button
-            close_btn = page.locator("button[aria-label='Close']").first
-            await close_btn.wait_for(state="visible", timeout=3000)
-            await close_btn.click()
-        except Exception:
-            try:
-                # Fallback: click the close button via JS
-                await page.evaluate("""
-                    () => {
-                        const btn = document.querySelector('button[aria-label="Close"]');
-                        if (btn) btn.click();
-                    }
-                """)
-            except Exception:
-                # Last resort: press Escape
-                await page.keyboard.press("Escape")
-        await page.wait_for_timeout(1500)
-
-        return {
-            "name": name,
-            "city": parsed["city"],
-            "state": parsed["state"],
-            "full_location": location_raw,
-        }
-
-    except Exception as e:
-        print(f"       [WARN] Error on profile {index}: {e}")
-        # Try to close any open panel
-        try:
-            await page.evaluate("""
-                () => {
-                    const btn = document.querySelector('button[aria-label="Close"]');
-                    if (btn) btn.click();
-                }
-            """)
-        except Exception:
-            try:
-                await page.keyboard.press("Escape")
-            except Exception:
-                pass
-        await page.wait_for_timeout(1000)
-        return None
-
-
-async def scrape_current_page(
-    page, page_num: int, remaining_limit: int | None = None
-) -> list[dict]:
-    """Extract data from all profile cards on the current results page.
-
-    Args:
-        page: Playwright page instance.
-        page_num: Current page number (for logging).
-        remaining_limit: Max profiles still allowed to fetch (None = unlimited).
-    """
-    results = []
-    await page.wait_for_timeout(3000)
-
-    # Dismiss any popups before scraping this page
     await dismiss_popups(page)
 
-    # Count cards
-    cards = page.locator("div[role='row'][aria-label^='Profile card for']")
-    card_count = await cards.count()
+    # Click the "Criteria" button
+    print("       -> Clicking 'Criteria' button...")
+    try:
+        clicked = await page.evaluate("""
+            () => {
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {
+                    if (btn.textContent.trim().includes('Criteria')) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        """)
+        if not clicked:
+            raise Exception("Not found via JS")
+    except Exception:
+        await page.locator("button:has-text('Criteria')").first.click()
+    await page.wait_for_timeout(3000)
 
-    if card_count == 0:
-        cards = page.locator("div[aria-label='Search results'] > div")
-        card_count = await cards.count()
+    # Click "+ Add Criterion"
+    print("       -> Clicking '+ Add Criterion'...")
+    try:
+        clicked = await page.evaluate("""
+            () => {
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {
+                    if (btn.textContent.includes('Add Criterion')) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        """)
+        if not clicked:
+            raise Exception("Not found via JS")
+    except Exception:
+        await page.locator("button:has-text('Add Criterion')").first.click()
+    await page.wait_for_timeout(2000)
 
-    print(f"       Found {card_count} profiles on page {page_num}")
+    # Type criteria text into the textarea
+    print(f"       -> Typing criteria text...")
+    try:
+        textarea = page.locator("textarea:visible").first
+        await textarea.wait_for(state="visible", timeout=10000)
+        # Clear the field first
+        await textarea.fill("")
+        await page.wait_for_timeout(500)
+        # Use press_sequentially so React registers the keystrokes properly
+        await textarea.press_sequentially(criteria_text, delay=50)
+    except Exception as e:
+        print(f"       [WARN] Could not find criteria textarea: {e}")
+        
+    await page.wait_for_timeout(1500)
 
-    for i in range(card_count):
-        # Stop early if we've hit the fetch limit
-        if remaining_limit is not None and len(results) >= remaining_limit:
-            print(f"       [LIMIT] Reached fetch limit on page {page_num}, stopping.")
-            break
-
-        data = await extract_profile_data(page, i)
-        if data:
-            results.append(data)
-            print(
-                f"       [{i+1}/{card_count}] {data['name']} -- "
-                f"{data['city']}, {data['state']}"
-            )
-        else:
-            print(f"       [{i+1}/{card_count}] Skipped (no data)")
-
-    return results
-
-
-async def scrape_all_pages(page, fetch_limit: int = DEFAULT_FETCH_LIMIT) -> list[dict]:
-    """Iterate through all result pages and scrape profiles up to *fetch_limit*."""
-    all_results = []
-    page_num = 1
-
-    print(f"\n       Fetch limit set to {fetch_limit} records.")
-
-    while True:
-        remaining = fetch_limit - len(all_results)
-        if remaining <= 0:
-            print(f"\n       [LIMIT] Reached overall fetch limit of {fetch_limit}.")
-            break
-
-        print(f"\n[3/4] Scraping page {page_num}...")
-        page_results = await scrape_current_page(page, page_num, remaining)
-        all_results.extend(page_results)
-        print(
-            f"       [OK] Page {page_num} done -- {len(page_results)} profiles "
-            f"(total: {len(all_results)})"
-        )
-
-        # Stop if we've reached the limit after this page
-        if len(all_results) >= fetch_limit:
-            print(f"\n       [LIMIT] Reached fetch limit of {fetch_limit}. Stopping.")
-            break
-
-        # Check if "Next" button exists and is enabled
+    # Click "Update" button
+    print("       -> Clicking 'Update'...")
+    try:
+        update_btn = page.locator("button:has-text('Update'):visible").first
+        await update_btn.wait_for(state="visible", timeout=5000)
+        await update_btn.click()
+    except Exception:
         try:
-            next_disabled = await page.evaluate("""
+            clicked = await page.evaluate("""
                 () => {
                     const buttons = document.querySelectorAll('button');
                     for (const btn of buttons) {
-                        if (btn.textContent.trim() === 'Next' ||
-                            btn.textContent.includes('Next')) {
-                            return btn.disabled;
+                        const text = (btn.innerText || btn.textContent || '').toLowerCase();
+                        if (text.includes('update') && btn.offsetParent !== null) {
+                            btn.click();
+                            return true;
                         }
                     }
-                    return true;  // No next button found = last page
+                    return false;
                 }
             """)
+            if not clicked:
+                raise Exception("Not found via JS")
+        except Exception as e:
+            print(f"       [WARN] Failed to click 'Update' button: {e}")
 
-            if next_disabled:
-                print("\n       [DONE] Reached last page (Next button disabled).")
-                break
+    print("       -> Waiting for results to refresh with criteria...")
+    await page.wait_for_timeout(15000)
+    print("       [OK] Criteria applied!")
 
-            # Dismiss any popup before navigating
-            await dismiss_popups(page)
 
-            # Click next page
-            print(f"       -> Navigating to page {page_num + 1}...")
+async def switch_to_table_view(page):
+    """Switch the results display to Table View."""
+    print("       -> Switching to Table View...")
+    try:
+        btn = page.locator("button[value='stack']").first
+        await btn.wait_for(state="visible", timeout=10000)
+        await btn.click()
+    except Exception:
+        try:
+            btn = page.locator("button[aria-label='Table View']").first
+            await btn.click(timeout=5000)
+        except Exception:
             await page.evaluate("""
                 () => {
                     const buttons = document.querySelectorAll('button');
                     for (const btn of buttons) {
-                        if (btn.textContent.trim() === 'Next' ||
-                            btn.textContent.includes('Next')) {
+                        const label = btn.getAttribute('aria-label') || '';
+                        const value = btn.getAttribute('value') || '';
+                        if (label === 'Table View' || value === 'stack' || label.toLowerCase().includes('table')) {
                             btn.click();
-                            return;
+                            return true;
                         }
                     }
+                    return false;
                 }
             """)
-            await page.wait_for_timeout(5000)
-            page_num += 1
+    await page.wait_for_timeout(5000)
+    print("       [OK] Switched to Table View!")
 
-        except Exception as e:
-            print(f"\n       [DONE] No more pages ({e}).")
+
+async def extract_visible_rows(page) -> list[dict]:
+    """Extract data from all currently visible rows in the MUI DataGrid."""
+    return await page.evaluate(r"""
+        () => {
+            const results = [];
+            // Try MuiDataGrid-row first, fallback to any div with role="row" inside a grid
+            let rows = document.querySelectorAll('.MuiDataGrid-row');
+            if (rows.length === 0) {
+                rows = Array.from(document.querySelectorAll('div[role="row"]')).filter(r => {
+                    const rowId = r.getAttribute('data-id') || r.getAttribute('data-rowindex');
+                    return rowId !== null;
+                });
+            }
+
+            for (const row of rows) {
+                const rowId = row.getAttribute('data-id') || row.getAttribute('data-rowindex') || '';
+
+                // Name
+                let name = '';
+                const nameCell = row.querySelector('[data-field="full_name"]');
+                if (nameCell) {
+                    name = nameCell.textContent.trim();
+                } else {
+                    // Fallback Name: first column text
+                    const firstCell = row.querySelector('[aria-colindex="1"]');
+                    if (firstCell) name = firstCell.textContent.trim();
+                }
+
+                // LinkedIn URL
+                let linkedinUrl = '';
+                const profilesCell = row.querySelector('[data-field="profiles"]');
+                if (profilesCell) {
+                    const link = profilesCell.querySelector('a[aria-label="linkedin"], a[href*="linkedin.com"]');
+                    if (link) linkedinUrl = link.href || '';
+                } else {
+                     // Fallback
+                     const link = row.querySelector('a[href*="linkedin.com"]');
+                     if (link) linkedinUrl = link.href || '';
+                }
+
+                // Location
+                let location = '';
+                const locationCell = row.querySelector('[data-field="location_info"], [data-field="location"]');
+                if (locationCell) {
+                    location = locationCell.textContent.trim();
+                } else {
+                    // Fallback: looking for city/state patterns? Hard to guess.
+                }
+
+                if (name) {
+                    results.push({
+                        row_id: rowId,
+                        name: name,
+                        linkedin_url: linkedinUrl,
+                        location: location
+                    });
+                }
+            }
+            return results;
+        }
+    """)
+
+
+async def scrape_table_view(page, fetch_limit: int = DEFAULT_FETCH_LIMIT) -> list[dict]:
+    """Scroll through the DataGrid table and extract all profiles."""
+    all_results = []
+    seen_ids = set()
+    no_new_data_count = 0
+    max_no_new_data = 10
+
+    print(f"\n[4/5] Scraping Table View (limit: {fetch_limit})...")
+    
+    # Wait for the DataGrid to actually render before we start scraping
+    try:
+        await page.wait_for_selector(".MuiDataGrid-row, [role='row']", state="visible", timeout=15000)
+    except Exception:
+        print("       [WARN] DataGrid rows didn't appear in time, scraping might fail.")
+        
+    await page.wait_for_timeout(3000)
+
+    while len(all_results) < fetch_limit:
+        rows_data = await extract_visible_rows(page)
+        
+        if not rows_data and len(all_results) == 0:
+            # Debug: check if datagrid even exists
+            row_count = await page.locator('[role="row"]').count()
+            print(f"       [DEBUG] No data extracted from rows. Found {row_count} [role='row'] elements on page.")
+
+        new_count = 0
+        for row in rows_data:
+            dedup_key = row.get("row_id") or row.get("name", "")
+            if dedup_key and dedup_key not in seen_ids:
+                seen_ids.add(dedup_key)
+                result = {
+                    "name": row.get("name", ""),
+                    "linkedin_url": row.get("linkedin_url", ""),
+                    "location": row.get("location", ""),
+                }
+                all_results.append(result)
+                new_count += 1
+
+                if len(all_results) >= fetch_limit:
+                    break
+
+        print(
+            f"       Collected {len(all_results)} profiles so far "
+            f"(+{new_count} new)..."
+        )
+
+        if new_count == 0:
+            no_new_data_count += 1
+            if no_new_data_count >= max_no_new_data:
+                print("       [DONE] No more new data found after scrolling.")
+                break
+        else:
+            no_new_data_count = 0
+
+        if len(all_results) >= fetch_limit:
+            print(f"       [LIMIT] Reached fetch limit of {fetch_limit}.")
             break
 
-    return all_results
+        # Scroll down in the DataGrid virtual scroller
+        at_bottom = await page.evaluate("""
+            () => {
+                const scroller = document.querySelector('.MuiDataGrid-virtualScroller');
+                if (!scroller) return true;
+                const before = scroller.scrollTop;
+                scroller.scrollBy(0, 300);
+                return Math.abs(scroller.scrollTop - before) < 1;
+            }
+        """)
+
+        if at_bottom:
+            print("       [DONE] Reached bottom of table.")
+            break
+
+        await page.wait_for_timeout(800)
+
+    final = all_results[:fetch_limit]
+    print(f"\n       [OK] Total profiles scraped: {len(final)}")
+    return final
 
 
 def save_to_csv(data: list[dict], filename: str):
     """Save the scraped data to a CSV file."""
-    # Use OUTPUT_DIR env var if set (e.g. /app/output in Docker), else script dir
     output_dir = os.environ.get(
         "OUTPUT_DIR", os.path.dirname(os.path.abspath(__file__))
     )
@@ -675,33 +645,27 @@ def save_to_csv(data: list[dict], filename: str):
     filepath = os.path.join(output_dir, filename)
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["name", "city", "state", "full_location"]
+            f, fieldnames=["name", "linkedin_url", "location"]
         )
         writer.writeheader()
         writer.writerows(data)
-    print(f"\n[4/4] [OK] Saved {len(data)} records to: {filepath}")
+    print(f"\n[5/5] [OK] Saved {len(data)} records to: {filepath}")
     return filepath
 
 
 # -- Programmatic API ----------------------------------------------------------
 async def run_scraper(
     query: str,
+    criteria: str = "",
     fetch_limit: int = DEFAULT_FETCH_LIMIT,
     headless: bool = True,
     save_to_disk: bool = True,
     log_fn=None,
 ) -> tuple[list[dict], str, str]:
-    """Run the scraper programmatically (used by Streamlit frontend).
-
-    Args:
-        query: Search query string.
-        fetch_limit: Maximum number of records to fetch.
-        headless: Run browser in headless mode.
-        save_to_disk: Whether to save the CSV file to disk.
-        log_fn: Optional callback ``fn(msg)`` for each log line.
+    """Run the scraper programmatically.
 
     Returns:
-        ``(data_list, csv_filepath, error_message)`` – on failure, data_list is empty and error_message is populated.
+        ``(data_list, csv_filepath, error_message)``
     """
     import builtins
 
@@ -722,7 +686,11 @@ async def run_scraper(
 
         filename = generate_filename(query)
         print(f"Results will be saved to: {filename}")
-        print(f"Fetch limit: {fetch_limit} records\n")
+        print(f"Fetch limit: {fetch_limit} records")
+        if criteria:
+            print(f"Criteria: {criteria}\n")
+        else:
+            print("No criteria specified.\n")
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -744,7 +712,14 @@ async def run_scraper(
             try:
                 await login(page)
                 await perform_search(page, query)
-                all_data = await scrape_all_pages(page, fetch_limit)
+
+                # Add criteria if provided
+                if criteria:
+                    await add_criteria(page, criteria)
+
+                # Switch to table view and scrape
+                await switch_to_table_view(page)
+                all_data = await scrape_table_view(page, fetch_limit)
 
                 filepath = ""
                 if all_data:
@@ -754,9 +729,9 @@ async def run_scraper(
                     print("\n[WARN] No data was extracted.")
 
                 return all_data, filepath, ""
-            
+
             except PlaywrightTimeout as e:
-                err_msg = f"Timeout Error: The page took too long to load or an expected element was not found."
+                err_msg = "Timeout Error: The page took too long to load or an expected element was not found."
                 print(f"\n[FATAL] {err_msg}\nDetails: {e}")
                 try:
                     await page.screenshot(path="error.png", full_page=True)
@@ -772,7 +747,7 @@ async def run_scraper(
             finally:
                 print("\nClosing browser...")
                 await browser.close()
-                
+
     except Exception as e:
         err_msg = str(e)
         print(f"\n[FATAL] Initialization error: {err_msg}")
@@ -797,6 +772,9 @@ async def main():
         print("[ERROR] Search query cannot be empty.")
         sys.exit(1)
 
+    # Ask for criteria
+    criteria = input("\nEnter criteria (or press Enter to skip): ").strip()
+
     # Ask for fetch limit (default 500)
     limit_input = input(
         f"\nMax records to fetch (default {DEFAULT_FETCH_LIMIT}): "
@@ -814,7 +792,10 @@ async def main():
 
     filename = generate_filename(query)
     print(f"\nResults will be saved to: {filename}")
-    print(f"Fetch limit: {fetch_limit} records\n")
+    print(f"Fetch limit: {fetch_limit} records")
+    if criteria:
+        print(f"Criteria: {criteria}")
+    print()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -835,7 +816,12 @@ async def main():
         try:
             await login(page)
             await perform_search(page, query)
-            all_data = await scrape_all_pages(page, fetch_limit)
+
+            if criteria:
+                await add_criteria(page, criteria)
+
+            await switch_to_table_view(page)
+            all_data = await scrape_table_view(page, fetch_limit)
 
             if all_data:
                 save_to_csv(all_data, filename)
