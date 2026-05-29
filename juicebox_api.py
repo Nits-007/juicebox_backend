@@ -8,7 +8,7 @@ import sys
 import io
 import csv
 
-def _run_scraper_sync(query: str, criteria: str, fetch_limit: int, headless: bool):
+def _run_scraper_sync(query: str, criteria: str | list[str], fetch_limit: int, headless: bool):
     """Run the async scraper in a fresh event loop on Windows to avoid NotImplementedError."""
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -27,7 +27,7 @@ app = FastAPI()
 # Enable CORS globally
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://13.60.89.246"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,7 +37,7 @@ app.add_middleware(
 # Request model
 class ScrapeRequest(BaseModel):
     query: str
-    criteria: str = ""
+    criteria: str | list[str] = ""
     fetch_limit: int = 100
     headless: bool = True
 
@@ -73,7 +73,7 @@ async def scrape(data: ScrapeRequest):
         csv_content = ""
         if results:
             output = io.StringIO()
-            writer = csv.DictWriter(output, fieldnames=["name", "linkedin_url", "location"])
+            writer = csv.DictWriter(output, fieldnames=["name", "linkedin_url", "location", "job_title", "company"])
             writer.writeheader()
             writer.writerows(results)
             csv_content = output.getvalue()
