@@ -369,9 +369,9 @@ async def perform_search(page, query: str):
 
 
 # -- Criteria & Table View -----------------------------------------------------
-async def add_criteria(page, criteria_text: str):
-    """Click Criteria button, add a custom criterion, type text, and click Update."""
-    print(f"[3/5] Adding criteria: '{criteria_text}'")
+async def add_criteria(page, criteria_list: list[str]):
+    """Click Criteria button, add custom criteria, type text, and click Update."""
+    print(f"[3/5] Adding criteria: {criteria_list}")
 
     await dismiss_popups(page)
 
@@ -396,41 +396,42 @@ async def add_criteria(page, criteria_text: str):
         await page.locator("button:has-text('Criteria')").first.click()
     await page.wait_for_timeout(3000)
 
-    # Click "+ Add Criterion"
-    print("       -> Clicking '+ Add Criterion'...")
-    try:
-        clicked = await page.evaluate("""
-            () => {
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {
-                    if (btn.textContent.includes('Add Criterion')) {
-                        btn.click();
-                        return true;
+    for criteria_text in criteria_list:
+        # Click "+ Add Criterion"
+        print(f"       -> Clicking '+ Add Criterion' for '{criteria_text}'...")
+        try:
+            clicked = await page.evaluate("""
+                () => {
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        if (btn.textContent.includes('Add Criterion')) {
+                            btn.click();
+                            return true;
+                        }
                     }
+                    return false;
                 }
-                return false;
-            }
-        """)
-        if not clicked:
-            raise Exception("Not found via JS")
-    except Exception:
-        await page.locator("button:has-text('Add Criterion')").first.click()
-    await page.wait_for_timeout(2000)
+            """)
+            if not clicked:
+                raise Exception("Not found via JS")
+        except Exception:
+            await page.locator("button:has-text('Add Criterion')").first.click()
+        await page.wait_for_timeout(2000)
 
-    # Type criteria text into the textarea
-    print(f"       -> Typing criteria text...")
-    try:
-        textarea = page.locator("textarea:visible").first
-        await textarea.wait_for(state="visible", timeout=10000)
-        # Clear the field first
-        await textarea.fill("")
-        await page.wait_for_timeout(500)
-        # Use press_sequentially so React registers the keystrokes properly
-        await textarea.press_sequentially(criteria_text, delay=50)
-    except Exception as e:
-        print(f"       [WARN] Could not find criteria textarea: {e}")
-        
-    await page.wait_for_timeout(1500)
+        # Type criteria text into the textarea
+        print(f"       -> Typing criteria text...")
+        try:
+            textarea = page.locator("textarea:visible").last
+            await textarea.wait_for(state="visible", timeout=10000)
+            # Clear the field first
+            await textarea.fill("")
+            await page.wait_for_timeout(500)
+            # Use press_sequentially so React registers the keystrokes properly
+            await textarea.press_sequentially(criteria_text, delay=50)
+        except Exception as e:
+            print(f"       [WARN] Could not find criteria textarea: {e}")
+            
+        await page.wait_for_timeout(1500)
 
     # Click "Update" button
     print("       -> Clicking 'Update'...")
@@ -542,12 +543,28 @@ async def extract_visible_rows(page) -> list[dict]:
                     // Fallback: looking for city/state patterns? Hard to guess.
                 }
 
+                // Job Title
+                let jobTitle = '';
+                const jobTitleCell = row.querySelector('[data-field="job_title_info"], [data-field="job_title"]');
+                if (jobTitleCell) {
+                    jobTitle = jobTitleCell.textContent.trim();
+                }
+
+                // Company
+                let company = '';
+                const companyCell = row.querySelector('[data-field="company_info"], [data-field="company"]');
+                if (companyCell) {
+                    company = companyCell.textContent.trim();
+                }
+
                 if (name) {
                     results.push({
                         row_id: rowId,
                         name: name,
                         linkedin_url: linkedinUrl,
-                        location: location
+                        location: location,
+                        job_title: jobTitle,
+                        company: company
                     });
                 }
             }
@@ -590,6 +607,8 @@ async def scrape_table_view(page, fetch_limit: int = DEFAULT_FETCH_LIMIT) -> lis
                     "name": row.get("name", ""),
                     "linkedin_url": row.get("linkedin_url", ""),
                     "location": row.get("location", ""),
+                    "job_title": row.get("job_title", ""),
+                    "company": row.get("company", ""),
                 }
                 all_results.append(result)
                 new_count += 1
@@ -645,7 +664,7 @@ def save_to_csv(data: list[dict], filename: str):
     filepath = os.path.join(output_dir, filename)
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["name", "linkedin_url", "location"]
+            f, fieldnames=["name", "linkedin_url", "location", "job_title", "company"]
         )
         writer.writeheader()
         writer.writerows(data)
@@ -656,7 +675,7 @@ def save_to_csv(data: list[dict], filename: str):
 # -- Programmatic API ----------------------------------------------------------
 async def run_scraper(
     query: str,
-    criteria: str = "",
+    criteria: str | list[str] = "",
     fetch_limit: int = DEFAULT_FETCH_LIMIT,
     headless: bool = True,
     save_to_disk: bool = True,
@@ -687,8 +706,10 @@ async def run_scraper(
         filename = generate_filename(query)
         print(f"Results will be saved to: {filename}")
         print(f"Fetch limit: {fetch_limit} records")
+        c_list = []
         if criteria:
-            print(f"Criteria: {criteria}\n")
+            c_list = [criteria] if isinstance(criteria, str) else criteria
+            print(f"Criteria: {c_list}\n")
         else:
             print("No criteria specified.\n")
 
@@ -714,8 +735,8 @@ async def run_scraper(
                 await perform_search(page, query)
 
                 # Add criteria if provided
-                if criteria:
-                    await add_criteria(page, criteria)
+                if c_list:
+                    await add_criteria(page, c_list)
 
                 # Switch to table view and scrape
                 await switch_to_table_view(page)
@@ -773,7 +794,13 @@ async def main():
         sys.exit(1)
 
     # Ask for criteria
-    criteria = input("\nEnter criteria (or press Enter to skip): ").strip()
+    criteria_list = []
+    print("\nEnter criteria one by one. Press Enter on an empty line to finish.")
+    while True:
+        c = input(f"Criterion {len(criteria_list) + 1} (or press Enter to skip/finish): ").strip()
+        if not c:
+            break
+        criteria_list.append(c)
 
     # Ask for fetch limit (default 500)
     limit_input = input(
@@ -793,8 +820,8 @@ async def main():
     filename = generate_filename(query)
     print(f"\nResults will be saved to: {filename}")
     print(f"Fetch limit: {fetch_limit} records")
-    if criteria:
-        print(f"Criteria: {criteria}")
+    if criteria_list:
+        print(f"Criteria: {criteria_list}")
     print()
 
     async with async_playwright() as p:
@@ -817,8 +844,8 @@ async def main():
             await login(page)
             await perform_search(page, query)
 
-            if criteria:
-                await add_criteria(page, criteria)
+            if criteria_list:
+                await add_criteria(page, criteria_list)
 
             await switch_to_table_view(page)
             all_data = await scrape_table_view(page, fetch_limit)
