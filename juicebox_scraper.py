@@ -1,14 +1,3 @@
-"""
-Juicebox AI Scraper
--------------------
-Automates login, search, criteria filtering, and data extraction from Juicebox AI.
-Extracts Name, LinkedIn URL, Location, and Match Percentage from
-table view results and saves them to a CSV file.
-
-Usage:
-    python juicebox_scraper.py
-"""
-
 import asyncio
 import csv
 import os
@@ -19,7 +8,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
-# -- Configuration -------------------------------------------------------------
 load_dotenv()
 
 JUICEBOX_EMAIL = os.getenv("JUICEBOX_EMAIL")
@@ -38,7 +26,6 @@ PANEL_TIMEOUT = 15_000
 DEFAULT_FETCH_LIMIT = 500
 
 
-# -- Helpers -------------------------------------------------------------------
 def generate_filename(query: str) -> str:
     """Generate a descriptive CSV filename from the search query."""
     safe = re.sub(r"[^\w\s-]", "", query)[:40].strip().replace(" ", "_")
@@ -169,7 +156,6 @@ async def safe_click(page, selector, timeout=15000, description="element"):
         return False
 
 
-# -- Core Scraper --------------------------------------------------------------
 async def login(page):
     """Navigate to Juicebox and complete the login flow."""
     print("[1/5] Navigating to Juicebox...")
@@ -368,7 +354,6 @@ async def perform_search(page, query: str):
             print("       [WARN] Could not confirm results, continuing...")
 
 
-# -- Criteria & Table View -----------------------------------------------------
 async def add_criteria(page, criteria_list: list[str]):
     """Click Criteria button, add custom criteria, type text, and click Update."""
     print(f"[3/5] Adding criteria: {criteria_list}")
@@ -672,7 +657,6 @@ def save_to_csv(data: list[dict], filename: str):
     return filepath
 
 
-# -- Programmatic API ----------------------------------------------------------
 async def run_scraper(
     query: str,
     criteria: str | list[str] = "",
@@ -778,7 +762,6 @@ async def run_scraper(
         builtins.print = _original_print
 
 
-# -- Main Entry Point ----------------------------------------------------------
 async def main():
     """Main scraper orchestration."""
     if not JUICEBOX_EMAIL or not JUICEBOX_PASSWORD:
