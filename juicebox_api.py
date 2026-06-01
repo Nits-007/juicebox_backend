@@ -24,7 +24,7 @@ def _run_scraper_sync(query: str, criteria: str | list[str], fetch_limit: int, h
 
 app = FastAPI()
 
-# Enable CORS globally
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,7 +34,6 @@ app.add_middleware(
 )
 
 
-# Request model
 class ScrapeRequest(BaseModel):
     query: str
     criteria: str | list[str] = ""
@@ -42,7 +41,7 @@ class ScrapeRequest(BaseModel):
     headless: bool = True
 
 
-# Health check
+
 @app.get("/")
 async def root():
     return {
@@ -50,7 +49,6 @@ async def root():
     }
 
 
-# Main scraper endpoint
 @app.post("/scrape")
 async def scrape(data: ScrapeRequest):
 
@@ -69,7 +67,6 @@ async def scrape(data: ScrapeRequest):
                 detail=error
             )
 
-        # Generate CSV string in memory for the frontend to download
         csv_content = ""
         if results:
             output = io.StringIO()
