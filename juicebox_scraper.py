@@ -1,13 +1,28 @@
+"""
+Juicebox AI Scraper
+-------------------
+Automates login, search, criteria filtering, and data extraction from Juicebox AI.
+Extracts Name, LinkedIn URL, Location, and Match Percentage from
+table view results and saves them to a CSV file.
+
+Usage:
+    python juicebox_scraper.py
+"""
+
 import asyncio
 import csv
+import json
 import os
 import re
 import sys
+import urllib.request
+import urllib.error
 from datetime import datetime
 
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
+# -- Configuration -------------------------------------------------------------
 load_dotenv()
 
 JUICEBOX_EMAIL = os.getenv("JUICEBOX_EMAIL")
@@ -26,11 +41,31 @@ PANEL_TIMEOUT = 15_000
 DEFAULT_FETCH_LIMIT = 500
 
 
+# -- Helpers -------------------------------------------------------------------
 def generate_filename(query: str) -> str:
     """Generate a descriptive CSV filename from the search query."""
     safe = re.sub(r"[^\w\s-]", "", query)[:40].strip().replace(" ", "_")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"juicebox_{safe}_{ts}.csv"
+
+
+def send_cliq_notification(message: str):
+    """Send a notification to a Zoho Cliq channel via webhook."""
+    webhook_url = os.getenv("CLIQ_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    
+    payload = {"text": message}
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        headers={"Content-Type": "application/json"}
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"       [WARN] Failed to send Cliq notification: {e}")
 
 
 async def dismiss_popups(page):
@@ -156,6 +191,7 @@ async def safe_click(page, selector, timeout=15000, description="element"):
         return False
 
 
+# -- Core Scraper --------------------------------------------------------------
 async def login(page):
     """Navigate to Juicebox and complete the login flow."""
     print("[1/5] Navigating to Juicebox...")
@@ -354,6 +390,7 @@ async def perform_search(page, query: str):
             print("       [WARN] Could not confirm results, continuing...")
 
 
+# -- Criteria & Table View -----------------------------------------------------
 async def add_criteria(page, criteria_list: list[str]):
     """Click Criteria button, add custom criteria, type text, and click Update."""
     print(f"[3/5] Adding criteria: {criteria_list}")
@@ -657,6 +694,7 @@ def save_to_csv(data: list[dict], filename: str):
     return filepath
 
 
+# -- Programmatic API ----------------------------------------------------------
 async def run_scraper(
     query: str,
     criteria: str | list[str] = "",
@@ -697,6 +735,13 @@ async def run_scraper(
         else:
             print("No criteria specified.\n")
 
+        send_cliq_notification(
+            f"🚀 *Juicebox Scraper Started*\n"
+            f"**Query**: {query}\n"
+            f"**Criteria**: {c_list}\n"
+            f"**Limit**: {fetch_limit}"
+        )
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=headless,
@@ -730,8 +775,18 @@ async def run_scraper(
                 if all_data:
                     if save_to_disk:
                         filepath = save_to_csv(all_data, filename)
+                    send_cliq_notification(
+                        f"✅ *Juicebox Scraper Finished Successfully*\n"
+                        f"**Query**: {query}\n"
+                        f"**Found**: {len(all_data)} records."
+                    )
                 else:
                     print("\n[WARN] No data was extracted.")
+                    send_cliq_notification(
+                        f"⚠️ *Juicebox Scraper Finished with No Data*\n"
+                        f"**Query**: {query}\n"
+                        f"The scraper completed, but zero records were extracted."
+                    )
 
                 return all_data, filepath, ""
 
@@ -743,10 +798,20 @@ async def run_scraper(
                     print("[INFO] Saved screenshot to error.png for debugging.")
                 except Exception:
                     pass
+                send_cliq_notification(
+                    f"❌ *Juicebox Scraper Failed (Timeout)*\n"
+                    f"**Query**: {query}\n"
+                    f"**Error**: {err_msg}"
+                )
                 return [], "", err_msg
             except Exception as e:
                 err_msg = f"An unexpected error occurred during scraping: {e}"
                 print(f"\n[FATAL] {err_msg}")
+                send_cliq_notification(
+                    f"❌ *Juicebox Scraper Failed*\n"
+                    f"**Query**: {query}\n"
+                    f"**Error**: {err_msg}"
+                )
                 return [], "", err_msg
 
             finally:
@@ -756,12 +821,14 @@ async def run_scraper(
     except Exception as e:
         err_msg = str(e)
         print(f"\n[FATAL] Initialization error: {err_msg}")
+        send_cliq_notification(f"❌ *Juicebox Scraper Initialization Failed*\n**Error**: {err_msg}")
         return [], "", err_msg
 
     finally:
         builtins.print = _original_print
 
 
+# -- Main Entry Point ----------------------------------------------------------
 async def main():
     """Main scraper orchestration."""
     if not JUICEBOX_EMAIL or not JUICEBOX_PASSWORD:
@@ -807,6 +874,16 @@ async def main():
         print(f"Criteria: {criteria_list}")
     print()
 
+    send_cliq_notification(
+        f"🚀 *Juicebox Scraper Started (CLI)*\n"
+        f"**Query**: {query}\n"
+        f"**Criteria**: {criteria_list}\n"
+        f"**Limit**: {fetch_limit}"
+    )
+
+    is_success = None
+    all_data = []
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=False,
@@ -835,17 +912,36 @@ async def main():
 
             if all_data:
                 save_to_csv(all_data, filename)
+                is_success = True
             else:
                 print("\n[WARN] No data was extracted. Nothing to save.")
-
+                is_success = False
         except Exception as e:
             print(f"\n[FATAL] Error: {e}")
+            send_cliq_notification(
+                f"❌ *Juicebox Scraper Failed (CLI)*\n"
+                f"**Query**: {query}\n"
+                f"**Error**: {e}"
+            )
             import traceback
             traceback.print_exc()
 
         finally:
             print("\nClosing browser...")
             await browser.close()
+
+    if is_success is True:
+        send_cliq_notification(
+            f"✅ *Juicebox Scraper Finished Successfully (CLI)*\n"
+            f"**Query**: {query}\n"
+            f"**Found**: {len(all_data)} records."
+        )
+    elif is_success is False:
+        send_cliq_notification(
+            f"⚠️ *Juicebox Scraper Finished with No Data (CLI)*\n"
+            f"**Query**: {query}\n"
+            f"The scraper completed, but zero records were extracted."
+        )
 
     print("\n[OK] Scraper finished!")
 
